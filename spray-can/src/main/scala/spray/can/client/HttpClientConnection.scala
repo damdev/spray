@@ -23,6 +23,7 @@ import akka.io.{ Tcp, IO }
 import spray.can.parsing.SSLSessionInfoSupport
 import spray.http.{ SetRequestTimeout, Confirmed, HttpRequestPart }
 import spray.io._
+import java.net.InetSocketAddress
 
 private class HttpClientConnection(connectCommander: ActorRef,
                                    connect: Http.Connect,
@@ -31,16 +32,15 @@ private class HttpClientConnection(connectCommander: ActorRef,
   import context.system
   import connect._
 
-  log.debug("Attempting connection to {}", remoteAddress)
-
-  IO(Tcp) ! Tcp.Connect(remoteAddress, localAddress, options)
-
+  connectTo(remoteAddresses.head)
   context.setReceiveTimeout(settings.connectingTimeout)
 
   // we cannot sensibly recover from crashes
   override def supervisorStrategy = SupervisorStrategy.stoppingStrategy
 
-  def receive: Receive = {
+  def receive: Receive = connecting(remoteAddresses.tail.toList)
+
+  private def connecting(remainingAddresses: List[InetSocketAddress]): Receive = {
     case connected: Tcp.Connected ⇒
       context.setReceiveTimeout(Duration.Undefined)
       log.debug("Connected to {}", connected.remoteAddress)
@@ -52,11 +52,29 @@ private class HttpClientConnection(connectCommander: ActorRef,
       context.become(running(tcpConnection, pipelineStage, pipelineContext(connected)))
 
     case Tcp.CommandFailed(_: Tcp.Connect) ⇒
-      connectCommander ! Http.CommandFailed(connect)
-      context.stop(self)
+      retryRemainingOrStop(remainingAddresses)
 
     case ReceiveTimeout ⇒
-      log.warning("Configured connecting timeout of {} expired, stopping", settings.connectingTimeout)
+      if (remainingAddresses.nonEmpty) {
+        log.warning("Configured connecting timeout of {} expired, connecting to {} instead",
+          settings.connectingTimeout, remainingAddresses.head)
+      } else {
+        log.warning("Configured connecting timeout of {} expired, stopping", settings.connectingTimeout)
+      }
+
+      retryRemainingOrStop(remainingAddresses)
+  }
+
+  private def connectTo(remoteAddress: InetSocketAddress) = {
+    log.debug("Attempting connection to {}", remoteAddress)
+    IO(Tcp) ! Tcp.Connect(remoteAddress, localAddress, options)
+  }
+
+  private def retryRemainingOrStop(remaining: List[InetSocketAddress]) = remaining match {
+    case next :: rest ⇒
+      connectTo(next)
+      context.become(connecting(rest))
+    case _ ⇒
       connectCommander ! Http.CommandFailed(connect)
       context.stop(self)
   }

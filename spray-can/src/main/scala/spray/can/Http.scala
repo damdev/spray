@@ -16,7 +16,7 @@
 
 package spray.can
 
-import java.net.InetSocketAddress
+import java.net.{ InetSocketAddress, InetAddress }
 import com.typesafe.config.Config
 import scala.collection.immutable
 import akka.io.{ Inet, Tcp }
@@ -40,15 +40,24 @@ object Http extends ExtensionKey[HttpExt] {
   /// COMMANDS
   type Command = Tcp.Command
 
-  case class Connect(remoteAddress: InetSocketAddress,
+  case class Connect(remoteAddresses: List[InetSocketAddress],
                      sslEncryption: Boolean,
                      localAddress: Option[InetSocketAddress],
                      options: immutable.Traversable[Inet.SocketOption],
-                     settings: Option[ClientConnectionSettings])(implicit val sslEngineProvider: ClientSSLEngineProvider) extends Command
+                     settings: Option[ClientConnectionSettings])(implicit val sslEngineProvider: ClientSSLEngineProvider) extends Command {
+    require(remoteAddresses != null && remoteAddresses.nonEmpty, "address array can't be null or empty")
+  }
   object Connect {
+    def apply(remoteAddress: InetSocketAddress, sslEncryption: Boolean, localAddress: Option[InetSocketAddress],
+              options: immutable.Traversable[Inet.SocketOption], settings: Option[ClientConnectionSettings])(implicit sslEngineProvider: ClientSSLEngineProvider): Connect =
+      apply(List(remoteAddress), sslEncryption, localAddress, options, settings)
+
     def apply(host: String, port: Int = 80, sslEncryption: Boolean = false, localAddress: Option[InetSocketAddress] = None,
-              options: immutable.Traversable[Inet.SocketOption] = Nil, settings: Option[ClientConnectionSettings] = None)(implicit sslEngineProvider: ClientSSLEngineProvider): Connect =
-      apply(new InetSocketAddress(host, port), sslEncryption, localAddress, options, settings)
+              options: immutable.Traversable[Inet.SocketOption] = Nil, settings: Option[ClientConnectionSettings] = None)(implicit sslEngineProvider: ClientSSLEngineProvider): Connect = {
+
+      val addresses = InetAddress.getAllByName(host).map(addr ⇒ new InetSocketAddress(addr, port))
+      apply(addresses.toList, sslEncryption, localAddress, options, settings)
+    }
   }
 
   case class Bind(listener: ActorRef,
